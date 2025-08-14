@@ -47,3 +47,4 @@ pip install -r requirements.txt
 
 # Run the model
 python main.py-->
+For more details, look at the [report](https://github.com/alikauc/LSTM-Electericity-Load-Forecast/blob/main/An-LSTM-Based-Approach-to-Day-Ahead-Electricity-Load-Forecasting-main/Final_Report_ENEL645_group7.pdf).
