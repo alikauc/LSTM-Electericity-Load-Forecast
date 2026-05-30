@@ -10,7 +10,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error, r2_score
-from statsmodels.tsa.arima.model import ARIMA
 from joblib import Parallel, delayed
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -18,6 +17,7 @@ from tqdm import tqdm
 
 from data_loader import prepare_data, DEFAULT_FEATURES
 from model_architecture import LSTMModel
+from arima_model import forecast_day_arima, process_single_forecast_arima
 
 warnings.filterwarnings("ignore")
 
@@ -150,63 +150,6 @@ def forecast_day_lstm(
     return y_pred, y_true
 
 
-def forecast_day_arima(df_unscaled: pd.DataFrame, target_date: str) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Forecasting helper for a specific day using a classical ARIMA(2, 1, 2) model.
-
-    Args:
-        df_unscaled (pd.DataFrame): Original unscaled dataframe.
-        target_date (str): Timestamp/date string starting the 24h prediction window.
-
-    Returns:
-        Tuple[np.ndarray, np.ndarray]: Predicted load (24h) and actual load (24h).
-    """
-    forecast_start = pd.Timestamp(target_date)
-    history_start = forecast_start - timedelta(hours=168)  # 7 days history
-    history_end = forecast_start - timedelta(hours=1)
-    target_end = forecast_start + timedelta(hours=23)
-
-    history = df_unscaled.loc[history_start:history_end, "Load_Calgary"]
-
-    arima_model = ARIMA(history, order=(2, 1, 2))
-    model_fit = arima_model.fit()
-    forecast = model_fit.forecast(steps=24)
-
-    y_true = df_unscaled.loc[forecast_start:target_end, "Load_Calgary"].values
-    return forecast.values, y_true
-
-
-def process_single_forecast_arima(
-    idx: int, df_unscaled: pd.DataFrame, full_timestamps: pd.DatetimeIndex, input_len: int
-) -> Dict[str, Any]:
-    """
-    Thread-safe ARIMA execution helper for parallel evaluation on the test set.
-    """
-    forecast_start = full_timestamps[idx + input_len]
-    forecast_date = forecast_start.strftime("%Y-%m-%d")
-    try:
-        history = df_unscaled.loc[
-            forecast_start - pd.Timedelta(hours=24) : forecast_start - pd.Timedelta(hours=1), "Load_Calgary"
-        ]
-        arima_model = ARIMA(history, order=(2, 1, 2))
-        arima_model_fit = arima_model.fit()
-        forecast = arima_model_fit.forecast(steps=24)
-
-        actual_day_data = df_unscaled.loc[forecast_start : forecast_start + pd.Timedelta(hours=23), "Load_Calgary"]
-        if len(actual_day_data) < 24:
-            return None
-
-        y_true = actual_day_data.values
-        y_pred = forecast.values
-
-        mae = mean_absolute_error(y_true, y_pred)
-        rmse = math.sqrt(mean_squared_error(y_true, y_pred))
-        mape = mean_absolute_percentage_error(y_true, y_pred) * 100
-
-        return {"date": forecast_date, "MAE": mae, "RMSE": rmse, "MAPE": mape}
-    except Exception as e:
-        print(f"⚠️ ARIMA skipped {forecast_date} due to error: {e}")
-        return None
 
 
 def run_test_evaluation_lstm(

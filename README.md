@@ -31,10 +31,38 @@ The objective was to **predict day-ahead electricity load** using a Long Short-T
 
 ---
 
+## 📈 Results & Model Comparison
+
+We benchmark the LSTM against an optimized ARIMA statistical baseline. ARIMA hyperparameters were tuned via a 51-configuration parallel grid search on the cluster.
+
+### Full Test Set Performance
+
+| Metric | LSTM | ARIMA (2,0,2) Best | LSTM Improvement |
+| :--- | :---: | :---: | :---: |
+| **MAE (MW)** | **31.33** | 119.27 | 73.7% lower |
+| **RMSE (MW)** | **38.70** | 143.03 | 72.9% lower |
+| **MAPE** | **2.56%** | 10.89% | 76.5% lower |
+| **R² Score** | **0.9201** | — | — |
+
+### Challenging Event Days
+
+| Date | Event | LSTM MAPE | ARIMA MAPE |
+| :--- | :--- | :---: | :---: |
+| 2024-01-10 | Temperature Drop | 5.00% | 13.15% |
+| 2024-01-12 | Extreme Cold | 2.15% | 8.62% |
+| 2024-05-07 | High Wind | 1.96% | 21.98% |
+| 2024-10-14 | Public Holiday | 8.25% | 9.23% |
+
+> LSTM wins on **every event day**, with the largest margins during extreme weather where ARIMA's linear assumptions fail.
+
+📄 **Full comparison report**: [model_comparison.md](model_comparison.md)
+
+---
+
 ## 🛠 Tech Stack
 - **Programming:** Python
-- **Libraries:** PyTorch, Pandas, NumPy, Matplotlib, scikit-learn
-- **Tools:** Jupyter Notebook, Git, HPC cluster for training
+- **Libraries:** PyTorch, Pandas, NumPy, Matplotlib, scikit-learn, statsmodels, joblib
+- **Tools:** Jupyter Notebook, Git, HPC cluster (SLURM) for training and ARIMA optimization
 
 <!--## 🚀 How to Run
 ```bash
@@ -48,3 +76,4 @@ pip install -r requirements.txt
 # Run the model
 python main.py-->
 For more details, look at the [report](https://github.com/alikauc/LSTM-Electericity-Load-Forecast/blob/main/An-LSTM-Based-Approach-to-Day-Ahead-Electricity-Load-Forecasting-main/Final_Report_ENEL645_group7.pdf).
+
