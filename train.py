@@ -1,5 +1,7 @@
 import os
 import math
+import random
+import logging
 import zipfile
 import warnings
 from datetime import timedelta
@@ -18,11 +20,37 @@ from tqdm import tqdm
 from data_loader import prepare_data, DEFAULT_FEATURES
 from model_architecture import LSTMModel
 from arima_model import forecast_day_arima, process_single_forecast_arima
+from log_config import setup_logging
+from config_loader import get_train_config
 
 warnings.filterwarnings("ignore")
 
+logger = logging.getLogger(__name__)
+
 # Setup device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Default random seed for reproducibility
+DEFAULT_SEED = 42
+
+
+def set_seeds(seed: int = DEFAULT_SEED) -> None:
+    """
+    Sets random seeds across all libraries for deterministic reproducibility.
+
+    Must be called BEFORE any data loading, model initialization, or
+    DataLoader shuffling to guarantee identical results across runs.
+
+    Args:
+        seed (int): The random seed value. Default is 42.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    logger.info("Random seeds set to %d (torch, numpy, random, cudnn deterministic)", seed)
 
 
 def train_model(
@@ -86,7 +114,7 @@ def train_model(
         train_losses.append(avg_train)
         val_losses.append(avg_val)
 
-        print(f"Epoch {epoch + 1}/{epochs} | Train Loss: {avg_train:.4f} | Val Loss: {avg_val:.4f}")
+        logger.info("Epoch %d/%d | Train Loss: %.4f | Val Loss: %.4f", epoch + 1, epochs, avg_train, avg_val)
 
         # --- EARLY STOPPING CHECK ---
         if avg_val < best_val_loss:
@@ -96,7 +124,7 @@ def train_model(
         else:
             counter += 1
             if counter >= patience:
-                print(f"Early stopping triggered at epoch {epoch + 1}")
+                logger.info("Early stopping triggered at epoch %d", epoch + 1)
                 if best_model_state is not None:
                     model.load_state_dict(best_model_state)
                 break
@@ -167,7 +195,7 @@ def run_test_evaluation_lstm(
     Evaluates the trained LSTM model across all test set sequences.
     """
     forecast_results = []
-    print("Evaluating LSTM on test set...")
+    logger.info("Evaluating LSTM on test set...")
     for idx in tqdm(valid_test_indices, desc="LSTM Testing"):
         forecast_start = full_timestamps[idx + input_len]
         forecast_date = forecast_start.strftime("%Y-%m-%d")
@@ -199,7 +227,7 @@ def run_test_evaluation_lstm(
 
             forecast_results.append({"date": forecast_date, "MAE": mae, "RMSE": rmse, "MAPE": mape, "R2": r2})
         except Exception as e:
-            print(f"⚠️ LSTM skipped {forecast_date} due to error: {e}")
+            logger.warning("LSTM skipped %s due to error: %s", forecast_date, e)
 
     return forecast_results
 
@@ -218,44 +246,62 @@ def plot_loss_curve(train_losses: List[float], val_losses: List[float], output_p
     plt.grid(True)
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"Saved loss curve to {output_path}")
+    logger.info("Saved loss curve to %s", output_path)
 
 
 def main():
-    # Define execution parameters
-    csv_file = os.path.join(
-        "An-LSTM-Based-Approach-to-Day-Ahead-Electricity-Load-Forecasting-main", "data_complete.csv"
-    )
-    if not os.path.exists(csv_file):
-        csv_file = "data_complete.csv"  # Fallback
+    # Initialize logging before anything else
+    setup_logging()
 
-    print(f"Ingesting dataset from: {csv_file}")
-    input_len = 24
-    output_len = 24
-    batch_size = 64
-    epochs = 100
-    patience = 5
+    # Load configuration from YAML + CLI overrides
+    cfg = get_train_config()
+
+    # Set reproducibility seeds before any random operations
+    set_seeds(cfg["training"]["seed"])
+
+    # Resolve dataset path with fallback
+    csv_file = cfg["data"]["csv_path"]
+    if not os.path.exists(csv_file):
+        csv_file = cfg["data"].get("csv_path_fallback", csv_file)
+    if not os.path.exists(csv_file):
+        raise FileNotFoundError(f"Dataset CSV not found at {cfg['data']['csv_path']} or fallback")
+
+    # Extract config values
+    input_len = cfg["training"]["input_len"]
+    output_len = cfg["training"]["output_len"]
+    batch_size = cfg["training"]["batch_size"]
+    epochs = cfg["training"]["epochs"]
+    patience = cfg["training"]["patience"]
+    learning_rate = cfg["training"]["learning_rate"]
+    features = cfg["data"]["features"]
+
+    logger.info("Ingesting dataset from: %s", csv_file)
+    logger.info("Config: epochs=%d, batch_size=%d, lr=%.4f, patience=%d",
+                epochs, batch_size, learning_rate, patience)
 
     # 1. Load Data
     train_loader, val_loader, test_loader, scaler, df_unscaled, df_scaled = prepare_data(
         csv_path=csv_file,
-        features=DEFAULT_FEATURES,
+        features=features,
         input_len=input_len,
         output_len=output_len,
         batch_size=batch_size,
     )
 
     # 2. Build Model
-    model = LSTMModel(input_size=len(DEFAULT_FEATURES), hidden_size=64, num_layers=2, output_size=output_len).to(
-        DEVICE
-    )
-    print(f"Model successfully loaded to device: {DEVICE}")
+    model = LSTMModel(
+        input_size=len(features),
+        hidden_size=cfg["model"]["hidden_size"],
+        num_layers=cfg["model"]["num_layers"],
+        output_size=output_len,
+    ).to(DEVICE)
+    logger.info("Model successfully loaded to device: %s", DEVICE)
 
     # 3. Train Model
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    print("Beginning LSTM Model Training...")
+    logger.info("Beginning LSTM Model Training...")
     train_losses, val_losses = train_model(
         model=model,
         train_loader=train_loader,
@@ -268,25 +314,56 @@ def main():
     )
 
     # 4. Save model checkpoints
-    os.makedirs("models", exist_ok=True)
-    model_checkpoint_path = "models/lstm_model.pth"
+    model_checkpoint_path = cfg["output"]["model_checkpoint"]
+    os.makedirs(os.path.dirname(model_checkpoint_path), exist_ok=True)
     torch.save(model.state_dict(), model_checkpoint_path)
-    print(f"✅ Trained model saved to {model_checkpoint_path}")
+    logger.info("Trained model saved to %s", model_checkpoint_path)
 
     # 5. Plot loss curve
     plot_loss_curve(train_losses, val_losses)
 
     # 6. Specific Days Comparisons (IEEE Subplots format)
-    start_dates = [
-        "2024-01-10",  # major temp drop
-        "2024-01-12",  # coldest day
-        "2024-10-12",  # long weekend Saturday
-        "2024-10-14",  # holiday Monday
-        "2024-10-19",  # normal Saturday
-        "2024-10-21",  # normal Monday
-        "2024-05-07",  # max wind speed
-    ]
+    comparison_results = evaluate_event_days(
+        model=model, df_scaled=df_scaled, df_unscaled=df_unscaled,
+        features=features, scaler=scaler, device=DEVICE,
+    )
 
+    # 7. Full Test Set Evaluation
+    lstm_forecast_results, arima_forecast_results = run_full_test_evaluation(
+        model=model, df_scaled=df_scaled, df_unscaled=df_unscaled,
+        features=features, scaler=scaler, input_len=input_len,
+        output_len=output_len, device=DEVICE,
+    )
+
+    # 8. Performance Report
+    write_performance_report(lstm_forecast_results, arima_forecast_results)
+
+    # 9. Weekend vs Weekday analysis
+    analyze_weekend_weekday(lstm_forecast_results, arima_forecast_results, df_unscaled)
+
+    # 10. Archive results
+    archive_results(comparison_results)
+
+
+def evaluate_event_days(
+    model: nn.Module,
+    df_scaled: pd.DataFrame,
+    df_unscaled: pd.DataFrame,
+    features: List[str],
+    scaler: Any,
+    device: torch.device,
+) -> List[Dict[str, Any]]:
+    """
+    Evaluates LSTM and ARIMA forecasts on specific weather and holiday event days.
+    Generates IEEE-formatted comparison subplots and per-day CSVs.
+
+    Returns:
+        List of comparison result dictionaries for each event day.
+    """
+    start_dates = [
+        "2024-01-10", "2024-01-12", "2024-10-12", "2024-10-14",
+        "2024-10-19", "2024-10-21", "2024-05-07",
+    ]
     date_description = {
         "2024-01-10": "Temperature Drop Event",
         "2024-01-12": "Extreme Cold Day",
@@ -296,209 +373,187 @@ def main():
         "2024-10-21": "Typical Weekday",
         "2024-05-07": "High Wind Conditions",
     }
-
     subplot_labels = ["(a)", "(b)", "(c)", "(d)", "(e)", "(f)", "(g)"]
 
-    mpl.rcParams.update(
-        {
-            "font.family": "serif",
-            "font.size": 9,
-            "axes.labelsize": 9,
-            "axes.titlesize": 10,
-            "xtick.labelsize": 8,
-            "ytick.labelsize": 8,
-            "legend.fontsize": 8,
-            "figure.figsize": (7, 9),
-            "figure.dpi": 300,
-        }
-    )
+    mpl.rcParams.update({
+        "font.family": "serif", "font.size": 9, "axes.labelsize": 9,
+        "axes.titlesize": 10, "xtick.labelsize": 8, "ytick.labelsize": 8,
+        "legend.fontsize": 8, "figure.figsize": (7, 9), "figure.dpi": 300,
+    })
 
     fig, axs = plt.subplots(4, 2, figsize=(7, 8))
     axs = axs.flatten()
-
     y_min, y_max = 800, 1800
     comparison_results = []
 
-    print("Evaluating specific weather and holiday event days...")
+    logger.info("Evaluating specific weather and holiday event days...")
     for i, date in enumerate(start_dates):
         lstm_pred, y_true = forecast_day_lstm(
-            model=model,
-            df_scaled=df_scaled,
-            df_unscaled=df_unscaled,
-            features=DEFAULT_FEATURES,
-            scaler=scaler,
-            target_date=date,
-            device=DEVICE,
+            model=model, df_scaled=df_scaled, df_unscaled=df_unscaled,
+            features=features, scaler=scaler, target_date=date, device=device,
         )
         arima_pred, _ = forecast_day_arima(df_unscaled=df_unscaled, target_date=date)
 
-        # Save single day tabular data to CSV
-        comparison_df = pd.DataFrame(
-            {"Hour": range(24), "Actual_Load": y_true, "LSTM_Prediction": lstm_pred, "ARIMA_Prediction": arima_pred}
-        )
-        comparison_df.to_csv(f"forecast_comparison_{date}.csv", index=False)
+        pd.DataFrame({
+            "Hour": range(24), "Actual_Load": y_true,
+            "LSTM_Prediction": lstm_pred, "ARIMA_Prediction": arima_pred,
+        }).to_csv(f"forecast_comparison_{date}.csv", index=False)
 
-        # Calculate metrics
         lstm_mae = mean_absolute_error(y_true, lstm_pred)
         arima_mae = mean_absolute_error(y_true, arima_pred)
         lstm_mape = mean_absolute_percentage_error(y_true, lstm_pred) * 100
         arima_mape = mean_absolute_percentage_error(y_true, arima_pred) * 100
 
-        # Plot into subplots
         ax = axs[i]
         ax.plot(range(24), y_true, color="black", linewidth=1.2, label="Actual")
         ax.plot(range(24), lstm_pred, linestyle="--", color="blue", linewidth=1, label="LSTM")
         ax.plot(range(24), arima_pred, linestyle=":", color="red", linewidth=1, label="ARIMA")
-
-        ax.text(
-            0.03,
-            0.97,
-            subplot_labels[i],
-            transform=ax.transAxes,
-            fontsize=9,
-            fontweight="bold",
-            verticalalignment="top",
-        )
+        ax.text(0.03, 0.97, subplot_labels[i], transform=ax.transAxes,
+                fontsize=9, fontweight="bold", verticalalignment="top")
         ax.set_ylim(y_min, y_max)
         ax.set_title(date_description.get(date, ""))
-
-        metrics_text = (
-            f"LSTM: MAE={lstm_mae:.0f}, MAPE={lstm_mape:.1f}%\n" f"ARIMA: MAE={arima_mae:.0f}, MAPE={arima_mape:.1f}%"
-        )
-        ax.text(0.03, 0.03, metrics_text, transform=ax.transAxes, fontsize=7)
+        ax.text(0.03, 0.03,
+                f"LSTM: MAE={lstm_mae:.0f}, MAPE={lstm_mape:.1f}%\n"
+                f"ARIMA: MAE={arima_mae:.0f}, MAPE={arima_mape:.1f}%",
+                transform=ax.transAxes, fontsize=7)
         ax.legend(loc="upper right", framealpha=0.0, fontsize=7)
         ax.grid(True, linestyle=":", alpha=0.5, color="lightgray")
-
         if i % 2 == 0:
             ax.set_ylabel("Load (MW)")
         if i >= 4 or i == len(start_dates) - 1:
             ax.set_xlabel("Hour of Day")
 
-        comparison_results.append(
-            {
-                "Date": date,
-                "LSTM_MAE": lstm_mae,
-                "ARIMA_MAE": arima_mae,
-                "LSTM_RMSE": math.sqrt(mean_squared_error(y_true, lstm_pred)),
-                "ARIMA_RMSE": math.sqrt(mean_squared_error(y_true, arima_pred)),
-                "LSTM_MAPE": lstm_mape,
-                "ARIMA_MAPE": arima_mape,
-            }
-        )
+        comparison_results.append({
+            "Date": date, "LSTM_MAE": lstm_mae, "ARIMA_MAE": arima_mae,
+            "LSTM_RMSE": math.sqrt(mean_squared_error(y_true, lstm_pred)),
+            "ARIMA_RMSE": math.sqrt(mean_squared_error(y_true, arima_pred)),
+            "LSTM_MAPE": lstm_mape, "ARIMA_MAPE": arima_mape,
+        })
 
-    # Hide unused subplot (since we have 7 days in a 4x2 grid)
-    if len(start_dates) < 8:
-        for j in range(len(start_dates), 8):
-            axs[j].set_visible(False)
+    for j in range(len(start_dates), 8):
+        axs[j].set_visible(False)
 
     plt.tight_layout()
     plt.savefig("forecast_comparison_ieee.png", dpi=300, bbox_inches="tight")
     plt.close()
-    print("Saved IEEE-formatted subplots.")
-
+    logger.info("Saved IEEE-formatted subplots.")
     pd.DataFrame(comparison_results).to_csv("lstm_vs_arima_comparison.csv", index=False)
+    return comparison_results
 
-    # 7. Complete Test Set Evaluation (Chronological Sequences)
-    # The split ranges indices matching Subset splits
+
+def run_full_test_evaluation(
+    model: nn.Module, df_scaled: pd.DataFrame, df_unscaled: pd.DataFrame,
+    features: List[str], scaler: Any, input_len: int, output_len: int,
+    device: torch.device,
+) -> Tuple[List[Dict], List[Dict]]:
+    """
+    Runs full chronological test set evaluation for both LSTM and ARIMA.
+
+    Returns:
+        Tuple of (lstm_forecast_results, arima_forecast_results).
+    """
     dataset_length = len(df_scaled) - input_len - output_len
     train_size = int(dataset_length * 0.7)
     val_size = int(dataset_length * 0.15)
     valid_test_indices = list(range(train_size + val_size, dataset_length))
-
     full_timestamps = df_scaled.index
 
-    # LSTM Full Evaluation
     lstm_forecast_results = run_test_evaluation_lstm(
-        model=model,
-        df_scaled=df_scaled,
-        df_unscaled=df_unscaled,
-        features=DEFAULT_FEATURES,
-        scaler=scaler,
-        valid_test_indices=valid_test_indices,
-        full_timestamps=full_timestamps,
-        input_len=input_len,
-        device=DEVICE,
+        model=model, df_scaled=df_scaled, df_unscaled=df_unscaled,
+        features=features, scaler=scaler, valid_test_indices=valid_test_indices,
+        full_timestamps=full_timestamps, input_len=input_len, device=device,
     )
-    lstm_results_df = pd.DataFrame(lstm_forecast_results)
-    lstm_results_df.to_csv("daily_forecast_metrics.csv", index=False)
+    pd.DataFrame(lstm_forecast_results).to_csv("daily_forecast_metrics.csv", index=False)
 
-    # ARIMA Full Evaluation in parallel (using joblib for high efficiency)
-    print("Evaluating ARIMA on test set in parallel...")
+    logger.info("Evaluating ARIMA on test set in parallel...")
     arima_forecast_results = Parallel(n_jobs=-1)(
         delayed(process_single_forecast_arima)(idx, df_unscaled, full_timestamps, input_len)
         for idx in tqdm(valid_test_indices, desc="ARIMA Testing")
     )
     arima_forecast_results = [r for r in arima_forecast_results if r is not None]
-    arima_df = pd.DataFrame(arima_forecast_results)
 
-    # Write performance aggregates text summary
-    if not lstm_results_df.empty and len(arima_forecast_results) > 0:
-        avg_mae_lstm = lstm_results_df["MAE"].mean()
-        avg_rmse_lstm = lstm_results_df["RMSE"].mean()
-        avg_mape_lstm = lstm_results_df["MAPE"].mean()
-        avg_r2_lstm = lstm_results_df["R2"].mean()
+    return lstm_forecast_results, arima_forecast_results
 
-        avg_mae_arima = arima_df["MAE"].mean()
-        avg_rmse_arima = arima_df["RMSE"].mean()
-        avg_mape_arima = arima_df["MAPE"].mean()
 
-        performance_file = "model_performance.txt"
-        with open(performance_file, "w") as f:
-            f.write("📊 Average Performance on Full Test Set\n\n")
-            f.write("🔹 LSTM:\n")
-            f.write(f"   MAE: {avg_mae_lstm:.2f}\n")
-            f.write(f"   RMSE: {avg_rmse_lstm:.2f}\n")
-            f.write(f"   MAPE: {avg_mape_lstm:.2f}%\n")
-            f.write(f"   R² Score: {avg_r2_lstm:.4f}\n\n")
-            f.write("🔹 ARIMA:\n")
-            f.write(f"   MAE: {avg_mae_arima:.2f}\n")
-            f.write(f"   RMSE: {avg_rmse_arima:.2f}\n")
-            f.write(f"   MAPE: {avg_mape_arima:.2f}%\n")
-        print(f"Performance report saved to {performance_file}")
+def write_performance_report(
+    lstm_results: List[Dict], arima_results: List[Dict],
+    output_path: str = "model_performance.txt",
+) -> None:
+    """Writes aggregate performance metrics for both models to a text file."""
+    if not lstm_results or not arima_results:
+        logger.warning("Skipping performance report: insufficient results")
+        return
 
-    # Weekend vs Weekday analysis
-    print("Saving weekend vs weekday analysis comparison...")
-    lstm_by_day = pd.DataFrame(lstm_forecast_results).assign(
+    lstm_df = pd.DataFrame(lstm_results)
+    arima_df = pd.DataFrame(arima_results)
+
+    with open(output_path, "w") as f:
+        f.write("Average Performance on Full Test Set\n\n")
+        f.write("LSTM:\n")
+        f.write(f"   MAE: {lstm_df['MAE'].mean():.2f}\n")
+        f.write(f"   RMSE: {lstm_df['RMSE'].mean():.2f}\n")
+        f.write(f"   MAPE: {lstm_df['MAPE'].mean():.2f}%\n")
+        f.write(f"   R2 Score: {lstm_df['R2'].mean():.4f}\n\n")
+        f.write("ARIMA:\n")
+        f.write(f"   MAE: {arima_df['MAE'].mean():.2f}\n")
+        f.write(f"   RMSE: {arima_df['RMSE'].mean():.2f}\n")
+        f.write(f"   MAPE: {arima_df['MAPE'].mean():.2f}%\n")
+    logger.info("Performance report saved to %s", output_path)
+
+
+def analyze_weekend_weekday(
+    lstm_results: List[Dict], arima_results: List[Dict],
+    df_unscaled: pd.DataFrame,
+    output_path: str = "weekend_weekday_comparison.csv",
+) -> None:
+    """Compares model performance on weekends vs weekdays."""
+    logger.info("Saving weekend vs weekday analysis comparison...")
+
+    def _get_weekend_flag(date_val: pd.Timestamp) -> bool:
+        row = df_unscaled.loc[date_val.floor("D")]["Is_Weekend"]
+        return row.iloc[0] if isinstance(row, pd.Series) else row
+
+    lstm_by_day = pd.DataFrame(lstm_results).assign(
         date=lambda x: pd.to_datetime(x["date"]),
-        is_weekend=lambda x: x["date"].apply(lambda d: df_unscaled.loc[d.floor("D")]["Is_Weekend"].iloc[0] if isinstance(df_unscaled.loc[d.floor("D")]["Is_Weekend"], pd.Series) else df_unscaled.loc[d.floor("D")]["Is_Weekend"]),
+        is_weekend=lambda x: x["date"].apply(_get_weekend_flag),
     ).groupby("is_weekend").agg({"MAE": "mean", "MAPE": "mean"})
 
-    arima_by_day = pd.DataFrame(arima_forecast_results).assign(
+    arima_by_day = pd.DataFrame(arima_results).assign(
         date=lambda x: pd.to_datetime(x["date"]),
-        is_weekend=lambda x: x["date"].apply(lambda d: df_unscaled.loc[d.floor("D")]["Is_Weekend"].iloc[0] if isinstance(df_unscaled.loc[d.floor("D")]["Is_Weekend"], pd.Series) else df_unscaled.loc[d.floor("D")]["Is_Weekend"]),
+        is_weekend=lambda x: x["date"].apply(_get_weekend_flag),
     ).groupby("is_weekend").agg({"MAE": "mean", "MAPE": "mean"})
 
-    weekend_weekday_comparison = pd.DataFrame(index=[False, True])
-    weekend_weekday_comparison["LSTM_MAE"] = lstm_by_day["MAE"]
-    weekend_weekday_comparison["LSTM_MAPE"] = lstm_by_day["MAPE"]
-    weekend_weekday_comparison["ARIMA_MAE"] = arima_by_day["MAE"]
-    weekend_weekday_comparison["ARIMA_MAPE"] = arima_by_day["MAPE"]
+    comparison = pd.DataFrame(index=[False, True])
+    comparison["LSTM_MAE"] = lstm_by_day["MAE"]
+    comparison["LSTM_MAPE"] = lstm_by_day["MAPE"]
+    comparison["ARIMA_MAE"] = arima_by_day["MAE"]
+    comparison["ARIMA_MAPE"] = arima_by_day["MAPE"]
+    comparison = comparison.reset_index().rename(columns={"index": "Is_Weekend"})
+    comparison["Day_Type"] = comparison["Is_Weekend"].map({False: "Weekday", True: "Weekend"})
+    comparison = comparison[["Day_Type", "LSTM_MAE", "LSTM_MAPE", "ARIMA_MAE", "ARIMA_MAPE"]]
+    comparison.to_csv(output_path, index=False)
+    logger.info("Weekend vs Weekday comparison saved to %s", output_path)
 
-    weekend_weekday_comparison = weekend_weekday_comparison.reset_index().rename(columns={"index": "Is_Weekend"})
-    weekend_weekday_comparison["Day_Type"] = weekend_weekday_comparison["Is_Weekend"].map(
-        {False: "Weekday", True: "Weekend"}
-    )
-    weekend_weekday_comparison = weekend_weekday_comparison[
-        ["Day_Type", "LSTM_MAE", "LSTM_MAPE", "ARIMA_MAE", "ARIMA_MAPE"]
-    ]
 
-    weekend_weekday_comparison.to_csv("weekend_weekday_comparison.csv", index=False)
-    print("Weekend vs Weekday comparison saved to weekend_weekday_comparison.csv")
-
-    # 8. Create compressed results archive
+def archive_results(
+    comparison_results: List[Dict],
+    output_path: str = "forecast_results.zip",
+) -> None:
+    """Compresses all output files into a single ZIP archive."""
+    start_dates = [r["Date"] for r in comparison_results]
     output_files = (
         ["daily_forecast_metrics.csv", "model_performance.txt", "loss_curve.png", "lstm_vs_arima_comparison.csv"]
         + [f"forecast_comparison_{date}.csv" for date in start_dates]
         + ["forecast_comparison_ieee.png", "weekend_weekday_comparison.csv"]
     )
-
-    print("Compressing output files into forecast_results.zip...")
-    with zipfile.ZipFile("forecast_results.zip", "w") as zipf:
+    logger.info("Compressing output files into %s...", output_path)
+    with zipfile.ZipFile(output_path, "w") as zipf:
         for file in output_files:
             if os.path.exists(file):
                 zipf.write(file)
-    print("📦 All result files compressed into forecast_results.zip")
+    logger.info("All result files compressed into %s", output_path)
 
 
 if __name__ == "__main__":
     main()
+

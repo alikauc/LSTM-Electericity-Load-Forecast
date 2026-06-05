@@ -17,3 +17,4 @@ daily_forecast_metrics.csv
 weekend_weekday_comparison.csv
 lstm_vs_arima_comparison.csv
 model_performance.txt
+.agents/

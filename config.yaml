@@ -1,0 +1,57 @@
+# =============================================================================
+# LSTM Electricity Load Forecast — Configuration
+# =============================================================================
+# All hyperparameters, paths, and runtime settings are defined here.
+# Override any value via CLI arguments: python train.py --epochs 50
+# =============================================================================
+
+# --- Data ---
+data:
+  csv_path: "data_complete.csv"
+  # Fallback path if csv_path doesn't exist
+  csv_path_fallback: "An-LSTM-Based-Approach-to-Day-Ahead-Electricity-Load-Forecasting-main/data_complete.csv"
+  features:
+    - "Load_Calgary"
+    - "Temperature_C"
+    - "Wind_Speed_mps"
+    - "Is_Weekend"
+    - "Is_Holiday"
+    - "Day_of_Week_Num"
+  train_ratio: 0.70
+  val_ratio: 0.15
+
+# --- Model Architecture ---
+model:
+  hidden_size: 64
+  num_layers: 2
+
+# --- Training ---
+training:
+  input_len: 24        # Sequence length of input historical context (hours)
+  output_len: 24       # Forecast horizon length (hours)
+  batch_size: 64
+  epochs: 100
+  patience: 5          # Early stopping patience (epochs without improvement)
+  learning_rate: 0.001
+  seed: 42
+
+# --- ARIMA Baseline ---
+arima:
+  primary_order: [2, 1, 2]
+  fallback_order: [1, 1, 1]
+  history_hours: 168   # 7 days of hourly history
+  forecast_horizon: 24
+
+# --- Output Paths ---
+output:
+  model_checkpoint: "models/lstm_model.pth"
+  loss_curve: "loss_curve.png"
+  comparison_plot: "forecast_comparison_ieee.png"
+  results_archive: "forecast_results.zip"
+  performance_report: "model_performance_report.txt"
+
+# --- Logging ---
+logging:
+  log_dir: "logs"
+  log_level: "DEBUG"
+  console_level: "INFO"

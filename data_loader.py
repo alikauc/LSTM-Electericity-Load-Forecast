@@ -1,5 +1,5 @@
 import os
-from typing import Tuple, List
+from typing import Optional, Tuple, List
 import numpy as np
 import pandas as pd
 import torch
@@ -47,7 +47,7 @@ class LoadForecastDataset(Dataset):
 
 def prepare_data(
     csv_path: str,
-    features: List[str] = None,
+    features: Optional[List[str]] = None,
     input_len: int = 24,
     output_len: int = 24,
     batch_size: int = 64,
@@ -84,19 +84,59 @@ def prepare_data(
 
     # Load data, parsing 'Datetime' as time index
     df = pd.read_csv(csv_path, parse_dates=["Datetime"], index_col="Datetime")
+
+    # Ensure chronological order — unsorted CSVs would corrupt sliding windows
+    df = df.sort_index()
+
+    # Validate requested features exist in the dataset
+    missing_cols = set(features) - set(df.columns)
+    if missing_cols:
+        raise ValueError(
+            f"Features not found in CSV columns: {missing_cols}. "
+            f"Available columns: {list(df.columns)}"
+        )
     df = df[features]
 
-    # Preprocessing scaling
+    # Guard against NaN contamination — NaNs propagate through scaler and cause NaN loss
+    nan_counts = df.isna().sum()
+    if nan_counts.any():
+        raise ValueError(
+            f"Dataset contains NaN values that would corrupt training:\n{nan_counts[nan_counts > 0]}"
+        )
+
+    # Guard against insufficient data length
+    min_rows = input_len + output_len + 1  # At least 1 sliding window
+    if len(df) < min_rows:
+        raise ValueError(
+            f"Dataset has {len(df)} rows but needs at least {min_rows} "
+            f"(input_len={input_len} + output_len={output_len} + 1) to create a single window."
+        )
+
+    # Calculate partition boundaries BEFORE scaling to prevent data leakage.
+    # The scaler must be fitted on training data only — never on val/test rows.
+    total_windows = len(df) - input_len - output_len
+    train_size = int(total_windows * train_ratio)
+    val_size = int(total_windows * val_ratio)
+
+    # The last training window (index train_size-1) accesses raw rows up to
+    # (train_size - 1) + input_len + output_len - 1 = train_size + input_len + output_len - 2.
+    # df.iloc[:end] is exclusive, so end = that index + 1.
+    train_row_end = train_size + input_len + output_len - 1
+
+    # Fit scaler on TRAINING rows only, then transform the full dataset
     scaler = MinMaxScaler()
-    df_scaled = pd.DataFrame(scaler.fit_transform(df), columns=features, index=df.index)
+    scaler.fit(df.iloc[:train_row_end])
+    df_scaled = pd.DataFrame(scaler.transform(df), columns=features, index=df.index)
 
     # Initialize sliding window dataset
     dataset = LoadForecastDataset(df_scaled.values, input_len, output_len)
 
-    # Calculate partition indices
+    # Verify partition math is consistent
     total = len(dataset)
-    train_size = int(total * train_ratio)
-    val_size = int(total * val_ratio)
+    if train_size + val_size > total:
+        raise ValueError(
+            f"Split sizes ({train_size} + {val_size} = {train_size + val_size}) exceed dataset length ({total})"
+        )
 
     # Define subsets chronologically to preserve temporal order in validation and testing
     train_set = Subset(dataset, list(range(0, train_size)))

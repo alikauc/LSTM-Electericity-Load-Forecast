@@ -6,6 +6,7 @@ Evaluates or optimizes the ARIMA baseline model independently of the LSTM.
 
 import os
 import argparse
+import logging
 import math
 import warnings
 import time
@@ -18,8 +19,11 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolu
 
 from data_loader import prepare_data, DEFAULT_FEATURES
 from arima_model import process_single_forecast_arima, DEFAULT_ORDER, FALLBACK_ORDER, HISTORY_HOURS, FORECAST_HORIZON
+from log_config import setup_logging
 
 warnings.filterwarnings("ignore")
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -155,6 +159,7 @@ def run_evaluation(
 
 
 def main():
+    setup_logging()
     args = parse_args()
     
     csv_file = args.csv_file
@@ -165,10 +170,10 @@ def main():
     if not os.path.exists(csv_file):
         raise FileNotFoundError(f"Could not locate dataset CSV file at {args.csv_file} or in current folder.")
 
-    print("====================================================================")
-    print("📈 STANDALONE ARIMA forecaster and optimizer tool")
-    print("====================================================================")
-    print(f"Loading data from: {csv_file}")
+    logger.info("====================================================================")
+    logger.info("STANDALONE ARIMA forecaster and optimizer tool")
+    logger.info("====================================================================")
+    logger.info("Loading data from: %s", csv_file)
     
     # We load df_unscaled using the indexing pattern of prepare_data
     df_unscaled = pd.read_csv(csv_file, parse_dates=["Datetime"], index_col="Datetime")
@@ -180,11 +185,11 @@ def main():
     
     indices = get_split_indices(len(df_unscaled), input_len, output_len, args.split, args.stride)
     
-    print(f"Dataset split:    {args.split.upper()}")
-    print(f"Index stride:     {args.stride} (evaluating every {args.stride}th sequence window)")
-    print(f"Total sequences:  {len(indices)} sequences out of {len(df_unscaled) - input_len - output_len} total windows")
-    print(f"Parallel workers: {args.n_jobs} (All cores if -1)")
-    print("====================================================================")
+    logger.info("Dataset split:    %s", args.split.upper())
+    logger.info("Index stride:     %d (evaluating every %dth sequence window)", args.stride, args.stride)
+    logger.info("Total sequences:  %d sequences out of %d total windows", len(indices), len(df_unscaled) - input_len - output_len)
+    logger.info("Parallel workers: %d (All cores if -1)", args.n_jobs)
+    logger.info("====================================================================")
 
     if args.array_index is not None:
         combinations = get_all_combinations()
@@ -194,8 +199,8 @@ def main():
         order, h = combinations[args.array_index]
         fallback_order = (args.fallback_p, args.fallback_d, args.fallback_q)
         
-        print(f"Evaluating Combination Index {args.array_index}: {order} | History: {h} hours")
-        print("\nRunning ARIMA evaluation ...")
+        logger.info("Evaluating Combination Index %d: %s | History: %d hours", args.array_index, order, h)
+        logger.info("Running ARIMA evaluation ...")
         
         start_time = time.time()
         mae, rmse, mape = run_evaluation(
@@ -203,7 +208,7 @@ def main():
         )
         elapsed = time.time() - start_time
         
-        print("\n✨ Evaluation Complete in {:.2f}s!".format(elapsed))
+        logger.info("Evaluation Complete in %.2fs!", elapsed)
         
         # Save results to array result file
         res_file = f"arima_res_{args.array_index}.csv"
@@ -220,7 +225,7 @@ def main():
             "Eval_Time_Sec": round(elapsed, 2)
         }])
         res_df.to_csv(res_file, index=False)
-        print(f"Results successfully written to {res_file}")
+        logger.info("Results successfully written to %s", res_file)
         return
 
     if args.mode == "evaluate":
@@ -228,11 +233,11 @@ def main():
         fallback_order = (args.fallback_p, args.fallback_d, args.fallback_q)
         history_hours = args.history
         
-        print(f"Evaluating Configuration:")
-        print(f"  • Primary ARIMA Order:  {order}")
-        print(f"  • Fallback ARIMA Order: {fallback_order}")
-        print(f"  • History hours:        {history_hours} hours ({history_hours/24:.1f} days)")
-        print("\nRunning ARIMA evaluation ...")
+        logger.info("Evaluating Configuration:")
+        logger.info("  Primary ARIMA Order:  %s", order)
+        logger.info("  Fallback ARIMA Order: %s", fallback_order)
+        logger.info("  History hours:        %d hours (%.1f days)", history_hours, history_hours/24)
+        logger.info("Running ARIMA evaluation ...")
         
         start_time = time.time()
         mae, rmse, mape = run_evaluation(
@@ -240,13 +245,13 @@ def main():
         )
         elapsed = time.time() - start_time
         
-        print("\n✨ Evaluation Complete in {:.2f}s!".format(elapsed))
-        print("--------------------------------------------------------------------")
-        print(f"📊 Results ({args.split.upper()} split, stride={args.stride}):")
-        print("  • Mean Absolute Error (MAE):       {:.2f} MW".format(mae))
-        print("  • Root Mean Squared Error (RMSE):   {:.2f} MW".format(rmse))
-        print("  • Mean Absolute Pct Error (MAPE):  {:.2f}%".format(mape))
-        print("--------------------------------------------------------------------")
+        logger.info("Evaluation Complete in %.2fs!", elapsed)
+        logger.info("--------------------------------------------------------------------")
+        logger.info("Results (%s split, stride=%d):", args.split.upper(), args.stride)
+        logger.info("  Mean Absolute Error (MAE):       %.2f MW", mae)
+        logger.info("  Root Mean Squared Error (RMSE):   %.2f MW", rmse)
+        logger.info("  Mean Absolute Pct Error (MAPE):  %.2f%%", mape)
+        logger.info("--------------------------------------------------------------------")
         
     elif args.mode == "optimize":
         # Define grid search parameter space
@@ -269,14 +274,14 @@ def main():
                         param_grid.append(((p, d, q), h))
                         
         total_runs = len(param_grid)
-        print(f"Starting Hyperparameter Grid Search (Total configurations to check: {total_runs})")
-        print(f"Sweep Grid: p={p_choices}, d={d_choices}, q={q_choices}, history={history_choices}")
-        print("--------------------------------------------------------------------")
+        logger.info("Starting Hyperparameter Grid Search (Total configurations to check: %d)", total_runs)
+        logger.info("Sweep Grid: p=%s, d=%s, q=%s, history=%s", p_choices, d_choices, q_choices, history_choices)
+        logger.info("--------------------------------------------------------------------")
         
         leaderboard = []
         
         for idx, (order, h) in enumerate(param_grid):
-            print(f"[{idx+1}/{total_runs}] Testing ARIMA{order} | History: {h} hours ... ", end="", flush=True)
+            logger.info("[%d/%d] Testing ARIMA%s | History: %d hours ...", idx+1, total_runs, order, h)
             t_start = time.time()
             mae, rmse, mape = run_evaluation(
                 df_unscaled, full_timestamps, indices, order, fallback_order, h, args.n_jobs
@@ -284,7 +289,7 @@ def main():
             t_elapsed = time.time() - t_start
             
             if not math.isnan(mae):
-                print(f"MAE: {mae:.2f} | MAPE: {mape:.2f}% | Time: {t_elapsed:.1f}s")
+                logger.info("MAE: %.2f | MAPE: %.2f%% | Time: %.1fs", mae, mape, t_elapsed)
                 leaderboard.append({
                     "Order": f"ARIMA{order}",
                     "p": order[0],
@@ -297,7 +302,7 @@ def main():
                     "Eval_Time_Sec": round(t_elapsed, 2)
                 })
             else:
-                print("FAILED/SKIPPED")
+                logger.warning("FAILED/SKIPPED")
                 
         # Sort leaderboard by MAE
         results_df = pd.DataFrame(leaderboard)
@@ -305,15 +310,15 @@ def main():
             results_df = results_df.sort_values(by="MAE").reset_index(drop=True)
             results_df.to_csv(args.out_csv, index=False)
             
-            print("\n====================================================================")
-            print("🏆 ARIMA OPTIMIZATION LEADERBOARD")
-            print("====================================================================")
-            print(results_df[["Order", "History_Hours", "MAE", "RMSE", "MAPE", "Eval_Time_Sec"]].to_string())
-            print("====================================================================")
-            print(f"💾 Full results saved to: {args.out_csv}")
-            print(f"🚀 Best Configuration: {results_df['Order'].iloc[0]} with {results_df['History_Hours'].iloc[0]} hours history!")
+            logger.info("====================================================================")
+            logger.info("ARIMA OPTIMIZATION LEADERBOARD")
+            logger.info("====================================================================")
+            logger.info("\n%s", results_df[["Order", "History_Hours", "MAE", "RMSE", "MAPE", "Eval_Time_Sec"]].to_string())
+            logger.info("====================================================================")
+            logger.info("Full results saved to: %s", args.out_csv)
+            logger.info("Best Configuration: %s with %s hours history!", results_df['Order'].iloc[0], results_df['History_Hours'].iloc[0])
         else:
-            print("⚠️ No valid configurations succeeded.")
+            logger.warning("No valid configurations succeeded.")
 
 
 if __name__ == "__main__":

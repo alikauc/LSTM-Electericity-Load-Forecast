@@ -49,7 +49,7 @@ def test_prepare_data_pipeline(tmp_path):
     validating the scaling, DataLoaders, and train/val/test splits.
     """
     # 1. Generate a mock dataframe with Datetime index
-    dates = pd.date_range(start="2026-01-01", periods=100, freq="H")
+    dates = pd.date_range(start="2026-01-01", periods=100, freq="h")
     dummy_df = pd.DataFrame(
         {
             "Load_Calgary": np.random.randint(800, 1800, size=100),

@@ -1,3 +1,4 @@
+import logging
 import math
 from datetime import timedelta
 from typing import Tuple, Dict, Any
@@ -8,6 +9,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolu
 from statsmodels.tsa.arima.model import ARIMA
 
 # Default ARIMA configuration
+logger = logging.getLogger(__name__)
 DEFAULT_ORDER = (2, 1, 2)
 FALLBACK_ORDER = (1, 1, 1)
 HISTORY_HOURS = 168  # 7 days of hourly history
@@ -30,12 +32,26 @@ def _fit_arima(history: pd.Series, order: Tuple[int, int, int] = DEFAULT_ORDER,
 
     Returns:
         Fitted ARIMA model result object.
+
+    Raises:
+        ValueError: If order tuples contain negative values or history is empty.
     """
+    # Validate inputs
+    for name, o in [("order", order), ("fallback_order", fallback_order)]:
+        if len(o) != 3:
+            raise ValueError(f"{name} must be a 3-tuple (p, d, q), got {o}")
+        if any(v < 0 for v in o):
+            raise ValueError(f"{name} values must be non-negative, got {o}")
+
+    if len(history) == 0:
+        raise ValueError("Cannot fit ARIMA on empty history series")
+
     try:
         model = ARIMA(history, order=order,
                       enforce_stationarity=False, enforce_invertibility=False)
         return model.fit()
     except Exception:
+        logger.debug("Primary ARIMA%s failed, falling back to %s", order, fallback_order)
         model = ARIMA(history, order=fallback_order,
                       enforce_stationarity=False, enforce_invertibility=False)
         return model.fit()
@@ -63,7 +79,13 @@ def forecast_day_arima(
 
     Returns:
         Tuple[np.ndarray, np.ndarray]: Predicted electricity load (24h) and actual load (24h).
+
+    Raises:
+        ValueError: If history_hours is not positive.
     """
+    if history_hours <= 0:
+        raise ValueError(f"history_hours must be positive, got {history_hours}")
+
     forecast_start = pd.Timestamp(target_date)
     history_start = forecast_start - timedelta(hours=history_hours)
     history_end = forecast_start - timedelta(hours=1)
@@ -132,5 +154,5 @@ def process_single_forecast_arima(
 
         return {"date": forecast_date, "MAE": mae, "RMSE": rmse, "MAPE": mape}
     except Exception as e:
-        print(f"⚠️ ARIMA skipped {forecast_date} due to error: {e}")
+        logger.warning("ARIMA skipped %s due to error: %s", forecast_date, e)
         return None
