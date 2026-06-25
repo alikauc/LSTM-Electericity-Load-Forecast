@@ -1,0 +1,6 @@
+{
+  "artifactType": "ARTIFACT_TYPE_IMPLEMENTATION_PLAN",
+  "summary": "Step-by-step plan to bring the LSTM Electricity Load Forecast codebase from research prototype to production-ready quality. Follows the P0→P1→P2→P3 priority order from the enterprise audit. Each non-trivial step will use doubt-driven development (CLAIM→EXTRACT→DOUBT→RECONCILE→STOP) so the user can verify engineering decisions and learn the process. Includes 3 open questions about re-training after data leakage fix, logging destination preferences, and config file format choice.",
+  "updatedAt": "2026-06-02T04:34:43.459093756Z",
+  "requestFeedback": true
+}

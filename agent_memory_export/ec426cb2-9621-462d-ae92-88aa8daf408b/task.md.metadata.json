@@ -1,0 +1,5 @@
+{
+  "artifactType": "ARTIFACT_TYPE_TASK",
+  "summary": "Task tracker for production-readiness remediation. Covers Phase 0 (critical fixes: data leakage, seeds, requirements, logging, validation), Phase 1 (config, refactor, tests, packaging, CI/CD), Phase 2 (data validation, SLURM paths, Makefile), and Phase 3 (pre-commit, docs, diagrams).",
+  "updatedAt": "2026-06-05T02:10:18.630359433Z"
+}
